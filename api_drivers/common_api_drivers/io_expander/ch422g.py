@@ -26,6 +26,7 @@ _REG_DIRECTION = const(2)
 
 class Pin(io_expander_framework.Pin):
     _output_states = 0x00
+    _output_initialized = False
     _i2c_bus: i2c.I2C.Bus = None
     _reg_in: i2c.I2C.Device = None
     _reg_out: i2c.I2C.Device = None
@@ -37,6 +38,8 @@ class Pin(io_expander_framework.Pin):
             raise ValueError('device has already been set')
 
         cls._device = device
+        cls._output_states = 0x00
+        cls._output_initialized = False
 
         cls._reg_in = i2c.I2C.Device(
             bus=device._bus,  # NOQA
@@ -92,22 +95,20 @@ class Pin(io_expander_framework.Pin):
     def _set_level(self, level):
         if self._mode == self.OUT:
             if level:
-                # 3. High level && Set 0 to output high
-                # 4. Low level && Set 0 to output low
-                states = Pin._output_states & ~self.__bit
-            else:
-                # 1. High level && Set 1 to output high
-                # 2. Low level && Set 1 to output low
                 states = Pin._output_states | self.__bit
+            else:
+                states = Pin._output_states & ~self.__bit
 
-            # Write to reg only when different */
-            if states != Pin._output_states:
+            # The CH422G powers up with an independent latch state. Ensure
+            # the first requested level always reaches the output register.
+            if not Pin._output_initialized or states != Pin._output_states:
                 self._write_reg(_REG_OUTPUT, states)
                 Pin._output_states = states
+                Pin._output_initialized = True
 
     def _get_level(self):
         if self._mode == self.IN:
-            states = ~self._read_reg(_REG_INPUT)
+            states = self._read_reg(_REG_INPUT)
         elif self._mode == self.OUT:
             states = Pin._output_states
         else:
