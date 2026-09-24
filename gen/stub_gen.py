@@ -29,11 +29,6 @@ def build_function(name, func):
 
     arg_count = 0
 
-    for i, arg in enumerate(args):
-        if arg['name'] and arg['name'] == 'user_data' and i == 0:
-            args = [args[~i + len(args)] for i in range(len(args))]
-            break
-
     for arg in args:
         arg_name = arg['name']
         if not arg_name:
@@ -297,9 +292,21 @@ struct_output = []
 
 
 enum_types = set()
+hardcoded_type_aliases = {
+    'anim_enable_t',
+    'event_code_t',
+    'event_list_t',
+    'fs_whence_t',
+    'grad_color_t',
+    'll_node_t',
+    'screen_load_anim_t',
+    'style_prop_t',
+    'style_selector_t',
+    'value_precise_t',
+}
 
 
-def read_enums(objs):
+def read_enums(objs, lvgl_api=None):
 
     def _iter_list(lst):
         for item in lst:
@@ -336,6 +343,36 @@ def read_enums(objs):
 
     _iter_dict(objs)
 
+    # Nested widget enums lose their full typedef name when represented in
+    # the binding metadata (for example chart.TYPE).  Preserve the exact C
+    # typedef aliases from LVGL's API JSON so corrected annotations such as
+    # ``chart_type_t`` remain valid Python types.
+    if lvgl_api is not None:
+        enums = {
+            enum.get('name')
+            for enum in lvgl_api.get('enums', [])
+            if enum.get('name')
+        }
+
+        for name in enums:
+            if name and name.startswith('lv_'):
+                enum_types.add(name[3:])
+
+        typedefs = {
+            typedef['name']: typedef['type'].get('name')
+            for typedef in lvgl_api.get('typedefs', [])
+            if typedef.get('name') and isinstance(typedef.get('type'), dict)
+        }
+
+        for name, target in typedefs.items():
+            seen = set()
+            while target in typedefs and target not in seen:
+                seen.add(target)
+                target = typedefs[target]
+
+            if target in enums and name.startswith('lv_'):
+                enum_types.add(name[3:])
+
 
 def build_objects(objects):
     for name, obj in objects.items():
@@ -371,7 +408,7 @@ def build_structs(structs):
 
 def build_enum_types():
     res = []
-    for name in enum_types:
+    for name in sorted(enum_types - hardcoded_type_aliases):
         res.append(f'{name} = int')
 
     return '\n'.join(res)
@@ -392,6 +429,7 @@ ll_node_t = int
 value_precise_t = float
 fs_whence_t = int
 screen_load_anim_t = int
+mp_int_wrapper = int
 _mp_int_wrapper = int
 
 event_cb_t = Callable
@@ -458,7 +496,12 @@ def run(json_path, lvgl_api_json_path):
 
     root = json.loads(data)
 
-    read_enums(root)
+    lvgl_api = None
+    if lvgl_api_json_path:
+        with open(lvgl_api_json_path, 'r') as f:
+            lvgl_api = json.load(f)
+
+    read_enums(root, lvgl_api)
 
     build_objects(root['objects'])
     build_functions(root['functions'])

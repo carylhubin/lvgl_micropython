@@ -559,19 +559,36 @@ def is_global_callback(arg_type):
 def get_py_type(type_name):
 
     def _get_best_match(tn):
-        best_match = ''
-
         for objnme in obj_names:
-            if tn.startswith(objnme):
-                if len(objnme) > len(best_match):
-                    best_match = objnme
+            # Widget instances use the exact ``lv_<widget>_t`` type.  A
+            # prefix match also catches unrelated types such as
+            # ``lv_chart_series_t`` and ``lv_chart_axis_t`` and incorrectly
+            # annotates both as ``chart``.
+            if tn == f'{objnme}_t':
+                return objnme
 
-        return best_match
+        return ''
 
     type_name = type_name.replace('const lv_', 'lv_').replace('const _lv_', '_lv_').strip()
 
     if type_name in json_c_to_py_types:
         return json_c_to_py_types[type_name]
+
+    # Keep containers of opaque pointers opaque.  Treating ``void`` as the
+    # element type produced invalid annotations such as ``List[None]`` and
+    # ``value: None`` for void** parameters and void* arrays.
+    if re.match(r'^(?:const\s+)?void\s*\*', type_name):
+        py_type = 'List[Any]' if '[' in type_name else 'Any'
+        json_c_to_py_types[type_name] = py_type
+        return py_type
+
+    # A function pointer reaches this fallback only when it cannot use the
+    # Python callback bridge (for example lv_utils_bsearch's inline cmp
+    # parameter).  It is converted as a raw pointer, so expose it as Any
+    # instead of trying to parse the C declarator as a Python list type.
+    if re.search(r'\(\s*\*[^)]*\)', type_name):
+        json_c_to_py_types[type_name] = 'Any'
+        return 'Any'
 
     new_type_name = type_name
     lvobj = False
@@ -580,7 +597,7 @@ def get_py_type(type_name):
         new_type_name = new_type_name[3:]
         lvobj = True
     elif new_type_name.startswith('_lv_'):
-        new_type_name = new_type_name[3:]
+        new_type_name = new_type_name[4:]
         lvobj = True
 
     if new_type_name.count('*') > 1:
@@ -3135,6 +3152,11 @@ def gen_mp_func(func, obj_name):
     else:
         param_count = len(args)
 
+    # Argument conversion may move user_data to the front, but metadata must
+    # stay in the C/Python call order.  Store each entry at its original AST
+    # index instead of appending in conversion order.
+    func_md['args'] = [None] * len(args)
+
     # If func prototype matches an already generated func, reuse it and only emit func obj that points to it.
     prototype_str = gen.visit(function_prototype(func))
     if prototype_str in func_prototypes:
@@ -3195,7 +3217,7 @@ def gen_mp_func(func, obj_name):
         ):  # Handle the case of 'void' param which should be ignored
             ba, arg_metadata = build_mp_func_arg(arg, i, func, obj_name)
             build_args.append(ba)
-            func_md['args'].append(arg_metadata)
+            func_md['args'][i] = arg_metadata
 
     print("""
 /*
@@ -3727,7 +3749,9 @@ for name, metadata in list(variable_metadata.items()):
     if not metadata['c_type'].endswith('class'):
         continue
 
-    obj_metadata[f'{name}_class'] = {
+    class_name = name if name.endswith('_class') else f'{name}_class'
+
+    obj_metadata[class_name] = {
         'class_attributes': collections.OrderedDict(),
         'attributes': collections.OrderedDict(),
         'py_type': 'class',
@@ -3735,7 +3759,7 @@ for name, metadata in list(variable_metadata.items()):
         'methods': collections.OrderedDict()
     }
 
-    obj_names.append(f'{name}_class')
+    obj_names.append(class_name)
     del variable_metadata[name]
 
 
