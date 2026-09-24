@@ -259,7 +259,7 @@ mp_lcd_err_t spi_init(mp_obj_t obj, uint16_t width, uint16_t height, uint8_t bpp
     }
 
     if (self->spi_device.spi_bus->state == MP_SPI_STATE_STOPPED) {
-        mp_machine_hw_spi_bus_initilize(self->spi_device.spi_bus);
+        mp_machine_hw_spi_bus_initialize(self->spi_device.spi_bus);
     }
 
     if (bpp == 16) {
