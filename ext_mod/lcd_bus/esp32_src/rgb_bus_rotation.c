@@ -177,6 +177,7 @@
         if (self->init_err != 0) {
             self->init_err_msg = MP_ERROR_TEXT("%d(esp_lcd_new_rgb_panel)");
             rgb_bus_lock_release(&self->init_lock);
+            vTaskDelete(NULL);
             return;
         }
 
@@ -184,6 +185,7 @@
         if (self->init_err != 0) {
             self->init_err_msg = MP_ERROR_TEXT("%d(esp_lcd_rgb_panel_register_event_callbacks)");
             rgb_bus_lock_release(&self->init_lock);
+            vTaskDelete(NULL);
             return;
         }
 
@@ -191,6 +193,7 @@
         if (self->init_err != 0) {
             self->init_err_msg = MP_ERROR_TEXT("%d(esp_lcd_panel_reset)");
             rgb_bus_lock_release(&self->init_lock);
+            vTaskDelete(NULL);
             return;
         }
 
@@ -198,6 +201,7 @@
         if (self->init_err != 0) {
             self->init_err_msg = MP_ERROR_TEXT("%d(esp_lcd_panel_init)");
             rgb_bus_lock_release(&self->init_lock);
+            vTaskDelete(NULL);
             return;
         }
 
@@ -286,6 +290,7 @@
         }
 
         LCD_DEBUG_PRINT("rgb_bus_copy_task - STOPPED\n")
+        vTaskDelete(NULL);
     }
 
 

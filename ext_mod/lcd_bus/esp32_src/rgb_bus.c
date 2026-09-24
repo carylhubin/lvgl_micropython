@@ -400,9 +400,16 @@
         LCD_DEBUG_PRINT("bits_per_pixel=%d\n", self->panel_io_config.bits_per_pixel)
         LCD_DEBUG_PRINT("rgb565_byte_swap=%d\n", self->rgb565_byte_swap)
 
-        xTaskCreatePinnedToCore(
-                rgb_bus_copy_task, "rgb_task", DEFAULT_STACK_SIZE / sizeof(StackType_t),
+        BaseType_t task_result = xTaskCreatePinnedToCore(
+                rgb_bus_copy_task, "rgb_task", DEFAULT_STACK_SIZE,
                 self, ESP_TASK_PRIO_MAX - 1, &self->copy_task_handle, 0);
+
+        if (task_result != pdPASS) {
+            rgb_bus_lock_release(&self->init_lock);
+            rgb_bus_lock_delete(&self->init_lock);
+            mp_raise_msg(&mp_type_MemoryError,
+                         MP_ERROR_TEXT("Unable to create RGB task"));
+        }
 
         rgb_bus_lock_acquire(&self->init_lock, -1);
         rgb_bus_lock_release(&self->init_lock);
