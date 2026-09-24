@@ -33,31 +33,6 @@
         #include "py/obj.h"
         #include "py/objarray.h"
 
-        typedef struct {
-            esp_lcd_panel_t base;  // Base class of generic lcd panel
-            int panel_id;          // LCD panel ID
-            lcd_hal_context_t hal; // Hal layer object
-            size_t data_width;     // Number of data lines
-            size_t fb_bits_per_pixel; // Frame buffer color depth, in bpp
-            size_t num_fbs;           // Number of frame buffers
-            size_t output_bits_per_pixel; // Color depth seen from the output data line. Default to fb_bits_per_pixel, but can be changed by YUV-RGB conversion
-            size_t dma_burst_size;  // DMA transfer burst size
-            int disp_gpio_num;     // Display control GPIO, which is used to perform action like "disp_off"
-            intr_handle_t intr;    // LCD peripheral interrupt handle
-            esp_pm_lock_handle_t pm_lock; // Power management lock
-            size_t num_dma_nodes;  // Number of DMA descriptors that used to carry the frame buffer
-            gdma_channel_handle_t dma_chan; // DMA channel handle
-            gdma_link_list_handle_t dma_fb_links[3]; // DMA link lists for multiple frame buffers
-            gdma_link_list_handle_t dma_bb_link; // DMA link list for bounce buffer
-        #if CONFIG_IDF_TARGET_ESP32S3
-            gdma_link_list_handle_t dma_restart_link; // DMA link list for restarting the DMA
-        #endif
-            uint8_t *fbs[3]; // Frame buffers
-            uint8_t *bounce_buffer[2]; // Pointer to the bounce buffers
-            size_t fb_size;        // Size of frame buffer, in bytes
-            size_t bb_size;        // Size of the bounce buffer, in bytes. If not-zero, the driver uses two bounce buffers allocated from internal memory
-            uint8_t cur_fb_index;  // Current frame buffer index
-        } rgb_panel_t;
 
         typedef struct _rgb_bus_lock_t {
             SemaphoreHandle_t handle;

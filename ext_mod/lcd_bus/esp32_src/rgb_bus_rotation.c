@@ -150,12 +150,11 @@
     static bool rgb_bus_trans_done_cb(esp_lcd_panel_handle_t panel,
                                     const esp_lcd_rgb_panel_event_data_t *edata, void *user_ctx)
     {
+        LCD_UNUSED(panel);
         LCD_UNUSED(edata);
         mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)user_ctx;
-        rgb_panel_t *rgb_panel = __containerof(panel, rgb_panel_t, base);
-        uint8_t *curr_buf = rgb_panel->fbs[rgb_panel->cur_fb_index];
 
-        if (curr_buf != self->active_fb && !rgb_bus_event_isset_from_isr(&self->swap_bufs)) {
+        if (!rgb_bus_event_isset_from_isr(&self->swap_bufs)) {
             uint8_t *idle_fb = self->idle_fb;
             self->idle_fb = self->active_fb;
             self->active_fb = idle_fb;
@@ -205,10 +204,20 @@
             return;
         }
 
-        rgb_panel_t *rgb_panel = __containerof((esp_lcd_panel_t *)self->panel_handle, rgb_panel_t, base);
+        void *frame_buffer0 = NULL;
+        void *frame_buffer1 = NULL;
+        self->init_err = esp_lcd_rgb_panel_get_frame_buffer(
+            self->panel_handle, 2, &frame_buffer0, &frame_buffer1);
 
-        self->active_fb = rgb_panel->fbs[0];
-        self->idle_fb = rgb_panel->fbs[1];
+        if (self->init_err != 0) {
+            self->init_err_msg = MP_ERROR_TEXT("%d(esp_lcd_rgb_panel_get_frame_buffer)");
+            rgb_bus_lock_release(&self->init_lock);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        self->active_fb = (uint8_t *)frame_buffer0;
+        self->idle_fb = (uint8_t *)frame_buffer1;
 
         uint8_t *idle_fb;
         bool last_update;
@@ -242,8 +251,8 @@
                     self->panel_handle,
                     0,
                     0,
-                    self->width - 1,
-                    self->height - 1,
+                    self->width,
+                    self->height,
                     idle_fb
                 );
 
