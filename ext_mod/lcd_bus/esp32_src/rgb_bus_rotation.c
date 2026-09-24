@@ -346,7 +346,7 @@
             uint32_t dst_bytes_per_line = dst_width * bytes_per_pixel;
 
             if (rgb565_dither) {
-                for(uint32_t y = y_start; y < y_end; y++) {
+                for(uint32_t y = y_start; y <= y_end; y++) {
                     for (uint32_t x=0;x<x_end;x++) {
                         rgb565_dither_pixel(CALC_THRESHOLD(x, y), (uint16_t *)(src) + x);
                         copy_16bpp((uint16_t *)(src) + x, (uint16_t *)(dst) + x);
@@ -355,7 +355,7 @@
                     src += src_bytes_per_line;
                 }
             } else {
-                for(uint32_t y = y_start; y < y_end; y++) {
+                for(uint32_t y = y_start; y <= y_end; y++) {
                     memcpy(dst, src, src_bytes_per_line);
                     dst += dst_bytes_per_line;
                     src += src_bytes_per_line;
