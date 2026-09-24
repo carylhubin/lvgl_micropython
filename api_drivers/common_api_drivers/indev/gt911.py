@@ -19,7 +19,9 @@ _CMD_READ_DATA = const(0x01)
 _ESD_CHECK_REG = const(0x8041)
 
 _STATUS_REG = const(0x814E)
-_POINT_1_REG = const(0x8150)
+_POINTS_REG = const(0x814F)
+_POINT_RECORD_SIZE = const(8)
+_MAX_TOUCH_POINTS = const(5)
 
 _PRODUCT_ID_REG = const(0x8140)
 _FIRMWARE_VERSION_REG = const(0x8144)
@@ -62,13 +64,14 @@ class GT911(pointer_framework.PointerDriver):
     ):
         self._tx_buf = bytearray(3)
         self._tx_mv = memoryview(self._tx_buf)
-        self._rx_buf = bytearray(6)
+        self._rx_buf = bytearray(_POINT_RECORD_SIZE * _MAX_TOUCH_POINTS)
         self._rx_mv = memoryview(self._rx_buf)
 
         self._device = device
 
         self.__x = 0
         self.__y = 0
+        self.__touch_points = ()
         self.__last_state = self.RELEASED
 
         if isinstance(reset_pin, int):
@@ -146,25 +149,45 @@ class GT911(pointer_framework.PointerDriver):
             )
         return gt911_extension.GT911Extension(self, self._device)
 
+    def get_touch_points(self):
+        """Return the latest raw contacts as (track_id, x, y, strength)."""
+        return self.__touch_points
+
     def _get_coords(self):
         self._read_reg(_STATUS_REG, 1)
         touch_cnt = self._rx_buf[0] & 0x0F
         status = self._rx_buf[0] & 0x80
 
         if status:
-            if touch_cnt == 1:
-                self._read_reg(_POINT_1_REG, 6)
+            if 0 < touch_cnt <= _MAX_TOUCH_POINTS:
+                self._read_reg(
+                    _POINTS_REG,
+                    touch_cnt * _POINT_RECORD_SIZE
+                )
+                points = []
+                for index in range(touch_cnt):
+                    offset = index * _POINT_RECORD_SIZE
+                    track_id = self._rx_buf[offset]
+                    x = (
+                        self._rx_buf[offset + 1] |
+                        (self._rx_buf[offset + 2] << 8)
+                    )
+                    y = (
+                        self._rx_buf[offset + 3] |
+                        (self._rx_buf[offset + 4] << 8)
+                    )
+                    strength = (
+                        self._rx_buf[offset + 5] |
+                        (self._rx_buf[offset + 6] << 8)
+                    )
+                    points.append((track_id, x, y, strength))
 
-                x = self._rx_buf[0] + (self._rx_buf[1] << 8)
-                y = self._rx_buf[2] + (self._rx_buf[3] << 8)
-
-                self._write_reg(_STATUS_REG, 0x00)
-
-                self.__x = x
-                self.__y = y
+                self.__touch_points = tuple(points)
+                self.__x = points[0][1]
+                self.__y = points[0][2]
                 self.__last_state = self.PRESSED
-
-            elif touch_cnt == 0:
+            else:
+                self.__touch_points = ()
                 self.__last_state = self.RELEASED
 
             self._write_reg(_STATUS_REG, 0x00)
