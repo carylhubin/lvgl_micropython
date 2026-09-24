@@ -458,9 +458,14 @@
         self->rotation = rotation;
 
         rgb_bus_lock_release(&self->copy_lock);
-//        if (self->callback != mp_const_none) {
-//            mp_call_function_n_kw(self->callback, 0, 0, NULL);
-//        }
+
+        // Wait until the copy task no longer reads LVGL's partial buffer.
+        rgb_bus_lock_acquire(&self->tx_color_lock, -1);
+        rgb_bus_lock_release(&self->tx_color_lock);
+
+        if (self->callback != mp_const_none && mp_obj_is_callable(self->callback)) {
+            mp_call_function_n_kw(self->callback, 0, 0, NULL);
+        }
 
         return LCD_OK;
     }
