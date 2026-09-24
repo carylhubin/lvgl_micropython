@@ -102,6 +102,7 @@
             ARG_de_idle_high,
             ARG_pclk_idle_high,
             ARG_pclk_active_low,
+            ARG_bounce_buffer_size_px,
             ARG_rgb565_dither
         };
 
@@ -138,6 +139,7 @@
             { MP_QSTR_de_idle_high,       MP_ARG_BOOL | MP_ARG_KW_ONLY, { .u_bool = false  } },
             { MP_QSTR_pclk_idle_high,     MP_ARG_BOOL | MP_ARG_KW_ONLY, { .u_bool = false  } },
             { MP_QSTR_pclk_active_low,    MP_ARG_BOOL | MP_ARG_KW_ONLY, { .u_bool = false  } },
+            { MP_QSTR_bounce_buffer_size_px, MP_ARG_INT | MP_ARG_KW_ONLY, { .u_int = 0     } },
             { MP_QSTR_rgb565_dither,      MP_ARG_BOOL | MP_ARG_KW_ONLY, { .u_bool = false  } },
         };
 
@@ -192,6 +194,8 @@
         self->panel_io_config.flags.refresh_on_demand = 0;
         self->panel_io_config.flags.fb_in_psram = 0;
         self->panel_io_config.flags.double_fb = 0;
+        self->panel_io_config.bounce_buffer_size_px =
+            (size_t)args[ARG_bounce_buffer_size_px].u_int;
 
         int i = 0;
         for (; i < 16; i++) {
@@ -240,6 +244,7 @@
         LCD_DEBUG_PRINT("refresh_on_demand=%d\n", self->panel_io_config.flags.refresh_on_demand)
         LCD_DEBUG_PRINT("fb_in_psram=%d\n", self->panel_io_config.flags.fb_in_psram)
         LCD_DEBUG_PRINT("double_fb=%d\n", self->panel_io_config.flags.double_fb)
+        LCD_DEBUG_PRINT("bounce_buffer_size_px=%u\n", (unsigned int)self->panel_io_config.bounce_buffer_size_px)
         LCD_DEBUG_PRINT("data_width=%d\n", self->panel_io_config.data_width)
 
         self->panel_io_handle.get_lane_count = &rgb_get_lane_count;
