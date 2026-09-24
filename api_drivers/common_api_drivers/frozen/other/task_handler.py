@@ -2,7 +2,7 @@
 # Copyright (c) 2024 - 2025 Kevin G. Schlosser
 
 
-import lvgl as lv  # NOQA
+import lvgl as lv  # type: ignore # NOQA
 import micropython  # NOQA
 import sys
 import time
@@ -15,7 +15,7 @@ TASK_HANDLER_FINISHED = 0x02
 
 _default_timer_id = 0
 
-if sys.platform in ('pyboard', 'rp2'):
+if sys.platform in ("pyboard", "rp2"):
     _default_timer_id = -1
 
 
@@ -25,7 +25,7 @@ class _DefaultUserData(object):
 
 def _default_exception_hook(e):
     sys.print_exception(e)  # NOQA
-    TaskHandler._current_instance.deinit()  # NOQA
+    TaskHandler._current_instance.deinit()  # type: ignore # NOQA
 
 
 class TaskHandler(object):
@@ -36,7 +36,7 @@ class TaskHandler(object):
         duration=33,
         timer_id=_default_timer_id,
         max_scheduled=2,
-        exception_hook=_default_exception_hook
+        exception_hook=_default_exception_hook,
     ):
         if TaskHandler._current_instance is not None:
             self.__dict__.update(TaskHandler._current_instance.__dict__)
@@ -59,9 +59,7 @@ class TaskHandler(object):
 
             self._start_time = time.ticks_ms()  # NOQA
             self._timer.init(
-                mode=Timer.PERIODIC,
-                period=self.duration,
-                callback=self._timer_cb
+                mode=Timer.PERIODIC, period=self.duration, callback=self._timer_cb
             )
             self._scheduled = 0
             self._running = False
@@ -82,9 +80,9 @@ class TaskHandler(object):
             self._callbacks.append((callback, event, user_data))
 
     def remove_event_cb(self, callback):
-        for (cb, evt, data) in self._callbacks:
+        for cb, evt, data in self._callbacks:
             if cb == callback:
-                self._callbacks.remove((cb,evt,data))
+                self._callbacks.remove((cb, evt, data))
                 break
 
     def deinit(self):
@@ -119,8 +117,8 @@ class TaskHandler(object):
 
                     except Exception as err:  # NOQA
                         if (
-                            self.exception_hook and
-                            self.exception_hook != _default_exception_hook
+                            self.exception_hook
+                            and self.exception_hook != _default_exception_hook
                         ):
                             self.exception_hook(err)
                         else:
@@ -144,8 +142,8 @@ class TaskHandler(object):
                             cb(TASK_HANDLER_FINISHED, data)
                         except Exception as err:  # NOQA
                             if (
-                                self.exception_hook and
-                                self.exception_hook != _default_exception_hook
+                                self.exception_hook
+                                and self.exception_hook != _default_exception_hook
                             ):
                                 self.exception_hook(err)
                             else:
@@ -159,7 +157,7 @@ class TaskHandler(object):
 
         except Exception as e:
             self._running = False
-            
+
             if self.exception_hook:
                 self.exception_hook(e)
 
