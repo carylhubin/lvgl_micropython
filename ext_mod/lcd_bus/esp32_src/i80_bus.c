@@ -313,7 +313,7 @@
             }
 
             for (uint8_t j=i + 1;j<i80_bus_count;j++) {
-                MP_STATE_PORT(i80_bus_objs)[j - i + 1] = MP_STATE_PORT(i80_bus_objs)[j];
+                MP_STATE_PORT(i80_bus_objs)[j - 1] = MP_STATE_PORT(i80_bus_objs)[j];
             }
 
             i80_bus_count--;

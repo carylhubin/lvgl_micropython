@@ -231,7 +231,7 @@ mp_lcd_err_t spi_del(mp_obj_t obj)
         }
 
         for (uint8_t j=i + 1;j<spi_bus_count;j++) {
-            MP_STATE_PORT(spi_bus_objs)[j - i + 1] = MP_STATE_PORT(spi_bus_objs)[j];
+            MP_STATE_PORT(spi_bus_objs)[j - 1] = MP_STATE_PORT(spi_bus_objs)[j];
         }
 
         spi_bus_count--;
