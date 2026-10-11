@@ -30,7 +30,10 @@
 
 
     static uint8_t i80_bus_count = 0;
-    static mp_lcd_i80_bus_obj_t **i80_bus_objs;
+    // On the GC heap (m_realloc), so registered as a root pointer: a
+    // static pointer is not scanned, and the table could be collected and
+    // handed out again while a bus still sat in it.
+    MP_REGISTER_ROOT_POINTER(struct _mp_lcd_i80_bus_obj_t **i80_bus_objs);
 
 
     void mp_lcd_i80_bus_deinit_all(void)
@@ -40,7 +43,7 @@
         mp_lcd_i80_bus_obj_t *objs[i80_bus_count];
 
         for (uint8_t i=0;i<i80_bus_count;i++) {
-            objs[i] = i80_bus_objs[i];
+            objs[i] = MP_STATE_PORT(i80_bus_objs)[i];
         }
 
         for (uint8_t i=0;i<i80_bus_count;i++) {
@@ -257,8 +260,8 @@
 
         // add the new bus ONLY after successfull initilization of the bus
         i80_bus_count++;
-        i80_bus_objs = m_realloc(i80_bus_objs, i80_bus_count * sizeof(mp_lcd_i80_bus_obj_t *));
-        i80_bus_objs[i80_bus_count - 1] = self;
+        MP_STATE_PORT(i80_bus_objs) = m_realloc(MP_STATE_PORT(i80_bus_objs), i80_bus_count * sizeof(mp_lcd_i80_bus_obj_t *));
+        MP_STATE_PORT(i80_bus_objs)[i80_bus_count - 1] = self;
 
         return ret;
     }
@@ -303,18 +306,18 @@
 
             uint8_t i = 0;
             for (;i<i80_bus_count;i++) {
-                if (i80_bus_objs[i] == self) {
-                    i80_bus_objs[i] = NULL;
+                if (MP_STATE_PORT(i80_bus_objs)[i] == self) {
+                    MP_STATE_PORT(i80_bus_objs)[i] = NULL;
                     break;
                 }
             }
 
             for (uint8_t j=i + 1;j<i80_bus_count;j++) {
-                i80_bus_objs[j - i + 1] = i80_bus_objs[j];
+                MP_STATE_PORT(i80_bus_objs)[j - i + 1] = MP_STATE_PORT(i80_bus_objs)[j];
             }
 
             i80_bus_count--;
-            i80_bus_objs = m_realloc(i80_bus_objs, i80_bus_count * sizeof(mp_lcd_i80_bus_obj_t *));
+            MP_STATE_PORT(i80_bus_objs) = m_realloc(MP_STATE_PORT(i80_bus_objs), i80_bus_count * sizeof(mp_lcd_i80_bus_obj_t *));
             return ret;
         } else {
             return LCD_FAIL;

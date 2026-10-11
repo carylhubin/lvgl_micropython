@@ -67,7 +67,10 @@ void spi_deinit_callback(mp_machine_hw_spi_device_obj_t *device);
 
 
 static uint8_t spi_bus_count = 0;
-static mp_lcd_spi_bus_obj_t **spi_bus_objs;
+// On the GC heap (m_realloc), so registered as a root pointer: a
+// static pointer is not scanned, and the table could be collected and
+// handed out again while a bus still sat in it.
+MP_REGISTER_ROOT_POINTER(struct _mp_lcd_spi_bus_obj_t **spi_bus_objs);
 
 
 void mp_lcd_spi_bus_deinit_all(void)
@@ -77,7 +80,7 @@ void mp_lcd_spi_bus_deinit_all(void)
     mp_lcd_spi_bus_obj_t *objs[spi_bus_count];
 
     for (uint8_t i=0;i<spi_bus_count;i++) {
-        objs[i] = spi_bus_objs[i];
+        objs[i] = MP_STATE_PORT(spi_bus_objs)[i];
     }
 
     for (uint8_t i=0;i<spi_bus_count;i++) {
@@ -221,18 +224,18 @@ mp_lcd_err_t spi_del(mp_obj_t obj)
 
         uint8_t i= 0;
         for (;i<spi_bus_count;i++) {
-            if (spi_bus_objs[i] == self) {
-                spi_bus_objs[i] = NULL;
+            if (MP_STATE_PORT(spi_bus_objs)[i] == self) {
+                MP_STATE_PORT(spi_bus_objs)[i] = NULL;
                 break;
             }
         }
 
         for (uint8_t j=i + 1;j<spi_bus_count;j++) {
-            spi_bus_objs[j - i + 1] = spi_bus_objs[j];
+            MP_STATE_PORT(spi_bus_objs)[j - i + 1] = MP_STATE_PORT(spi_bus_objs)[j];
         }
 
         spi_bus_count--;
-        spi_bus_objs = m_realloc(spi_bus_objs, spi_bus_count * sizeof(mp_lcd_spi_bus_obj_t *));
+        MP_STATE_PORT(spi_bus_objs) = m_realloc(MP_STATE_PORT(spi_bus_objs), spi_bus_count * sizeof(mp_lcd_spi_bus_obj_t *));
 
 
         mp_machine_hw_spi_bus_remove_device(&self->spi_device);
@@ -287,8 +290,8 @@ mp_lcd_err_t spi_init(mp_obj_t obj, uint16_t width, uint16_t height, uint8_t bpp
 
     // add the new bus ONLY after successfull initilization of the bus
     spi_bus_count++;
-    spi_bus_objs = m_realloc(spi_bus_objs, spi_bus_count * sizeof(mp_lcd_spi_bus_obj_t *));
-    spi_bus_objs[spi_bus_count - 1] = self;
+    MP_STATE_PORT(spi_bus_objs) = m_realloc(MP_STATE_PORT(spi_bus_objs), spi_bus_count * sizeof(mp_lcd_spi_bus_obj_t *));
+    MP_STATE_PORT(spi_bus_objs)[spi_bus_count - 1] = self;
 
     return ret;
 }

@@ -48,7 +48,10 @@
     mp_lcd_err_t rgb_tx_color(mp_obj_t obj, int lcd_cmd, void *color, size_t color_size, int x_start, int y_start, int x_end, int y_end, uint8_t rotation, bool last_update);
 
     static uint8_t rgb_bus_count = 0;
-    static mp_lcd_rgb_bus_obj_t **rgb_bus_objs;
+    // On the GC heap (m_realloc), so registered as a root pointer: a
+    // static pointer is not scanned, and the table could be collected and
+    // handed out again while a bus still sat in it.
+    MP_REGISTER_ROOT_POINTER(struct _mp_lcd_rgb_bus_obj_t **rgb_bus_objs);
 
 
     void mp_lcd_rgb_bus_deinit_all(void)
@@ -58,7 +61,7 @@
         mp_lcd_rgb_bus_obj_t *objs[rgb_bus_count];
 
         for (uint8_t i=0;i<rgb_bus_count;i++) {
-            objs[i] = rgb_bus_objs[i];
+            objs[i] = MP_STATE_PORT(rgb_bus_objs)[i];
         }
 
         for (uint8_t i=0;i<rgb_bus_count;i++) {
@@ -303,18 +306,18 @@
             uint8_t i = 0;
 
             for (;i<rgb_bus_count;i++) {
-                if (rgb_bus_objs[i] == self) {
-                    rgb_bus_objs[i] = NULL;
+                if (MP_STATE_PORT(rgb_bus_objs)[i] == self) {
+                    MP_STATE_PORT(rgb_bus_objs)[i] = NULL;
                     break;
                 }
             }
 
             for (uint8_t j=i + 1;j<rgb_bus_count;j++) {
-                rgb_bus_objs[j - i + 1] = rgb_bus_objs[j];
+                MP_STATE_PORT(rgb_bus_objs)[j - i + 1] = MP_STATE_PORT(rgb_bus_objs)[j];
             }
 
             rgb_bus_count--;
-            rgb_bus_objs = m_realloc(rgb_bus_objs, rgb_bus_count * sizeof(mp_lcd_rgb_bus_obj_t *));
+            MP_STATE_PORT(rgb_bus_objs) = m_realloc(MP_STATE_PORT(rgb_bus_objs), rgb_bus_count * sizeof(mp_lcd_rgb_bus_obj_t *));
             return ret;
         } else {
             return LCD_FAIL;
@@ -426,8 +429,8 @@
         } else {
             // add the new bus ONLY after successfull initilization of the bus
             rgb_bus_count++;
-            rgb_bus_objs = m_realloc(rgb_bus_objs, rgb_bus_count * sizeof(mp_lcd_rgb_bus_obj_t *));
-            rgb_bus_objs[rgb_bus_count - 1] = self;
+            MP_STATE_PORT(rgb_bus_objs) = m_realloc(MP_STATE_PORT(rgb_bus_objs), rgb_bus_count * sizeof(mp_lcd_rgb_bus_obj_t *));
+            MP_STATE_PORT(rgb_bus_objs)[rgb_bus_count - 1] = self;
 
             return LCD_OK;
         }
