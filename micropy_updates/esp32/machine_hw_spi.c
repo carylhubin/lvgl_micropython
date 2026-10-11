@@ -121,20 +121,24 @@ typedef struct _machine_hw_spi_obj_t {
 
 */
 
-// Static objects mapping to SPI2 (and SPI3 if available) hardware peripherals.
-static mp_machine_hw_spi_bus_obj_t *machine_hw_spi_bus_objs[MICROPY_HW_SPI_MAX];
+// Objects mapping to SPI2 (and SPI3 if available) hardware peripherals.
+// They live on the GC heap, so the table is a root pointer: as a static
+// array it was not scanned, a bus no longer referenced from Python was
+// collected, and the next SPI.Bus() on that host read freed memory
+// ("can't convert dict to int").
+MP_REGISTER_ROOT_POINTER(struct _mp_machine_hw_spi_bus_obj_t *machine_hw_spi_bus_objs[MICROPY_HW_SPI_MAX]);
 
 
 void mp_machine_hw_spi_bus_deinit_all(void)
 {
     for (int i = 0; i < MICROPY_HW_SPI_MAX; i++) {
-        mp_machine_hw_spi_bus_obj_t *bus = machine_hw_spi_bus_objs[i];
+        mp_machine_hw_spi_bus_obj_t *bus = MP_STATE_PORT(machine_hw_spi_bus_objs)[i];
         if (bus != NULL) {
             if (bus->initialized && bus->state != MP_SPI_STATE_STOPPED) {
                 machine_hw_spi_bus_deinit_internal(bus);
             }
             m_del_obj(mp_machine_hw_spi_bus_obj_t, bus);
-            machine_hw_spi_bus_objs[i] = NULL;
+            MP_STATE_PORT(machine_hw_spi_bus_objs)[i] = NULL;
         }
     }
 }
@@ -504,7 +508,7 @@ mp_obj_t machine_hw_spi_bus_make_new(const mp_obj_type_t *type, size_t n_args, s
     }
 
     if (1 <= host && host <= MICROPY_HW_SPI_MAX) {
-        self = machine_hw_spi_bus_objs[host - 1];
+        self = MP_STATE_PORT(machine_hw_spi_bus_objs)[host - 1];
     } else {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("SPI(%d) doesn't exist"), host);
         return mp_const_none;
@@ -523,7 +527,7 @@ mp_obj_t machine_hw_spi_bus_make_new(const mp_obj_type_t *type, size_t n_args, s
         self->device_count = 0;
         self->devices = NULL;
         self->deinit = &machine_hw_spi_bus_deinit_internal;
-        machine_hw_spi_bus_objs[host - 1] = self;
+        MP_STATE_PORT(machine_hw_spi_bus_objs)[host - 1] = self;
     } else {
         if ((int)mp_obj_get_int(self->data0) != mosi) reconfigure = true;
         if ((int)mp_obj_get_int(self->data1) != miso) reconfigure = true;
