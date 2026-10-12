@@ -276,6 +276,14 @@ class RGBBus:
     def free_framebuffer(self, framebuffer: memoryview, /) -> None:
         ...
 
+    def set_direct_mode(self, enable: bool, /) -> None:
+        """LVGL renders straight into the panel frame buffers, no copy."""
+        ...
+
+    def get_frame_buffers(self) -> tuple[memoryview, memoryview]:
+        """(back, front) in direct mode; RuntimeError otherwise."""
+        ...
+
 
 class I80Bus:
 

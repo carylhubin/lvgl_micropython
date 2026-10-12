@@ -91,6 +91,14 @@
             mp_lcd_err_t init_err;
             mp_rom_error_text_t init_err_msg;
 
+            // Direct mode: LVGL renders straight into the two panel frame
+            // buffers, and the copy task stays idle.
+            uint8_t *fbs[2];
+            rgb_bus_lock_t frame_done;
+            volatile uint8_t frame_wait;
+            volatile uint8_t copy_busy;
+            uint8_t direct_mode;
+
         } mp_lcd_rgb_bus_obj_t;
 
         void rgb_bus_event_init(rgb_bus_event_t *event);

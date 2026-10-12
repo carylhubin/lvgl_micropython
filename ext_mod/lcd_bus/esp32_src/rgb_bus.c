@@ -39,6 +39,8 @@
     #include <string.h>
 
     #define DEFAULT_STACK_SIZE    (5 * 1024)
+    // A frame lasts some 26 ms; a flash write can delay the panel ISRs.
+    #define RGB_BUS_FRAME_WAIT_MS (500)
 
     mp_lcd_err_t rgb_del(mp_obj_t obj);
     mp_lcd_err_t rgb_init(mp_obj_t obj, uint16_t width, uint16_t height, uint8_t bpp, uint32_t buffer_size, bool rgb565_byte_swap, uint8_t cmd_bits, uint8_t param_bits);
@@ -282,6 +284,8 @@
 
             rgb_bus_lock_delete(&self->copy_lock);
             rgb_bus_lock_delete(&self->tx_color_lock);
+            rgb_bus_lock_delete(&self->frame_done);
+            self->direct_mode = 0;
 
             rgb_bus_event_clear(&self->swap_bufs);
             rgb_bus_event_delete(&self->swap_bufs);
@@ -400,6 +404,12 @@
         rgb_bus_event_init(&self->copy_task_exit);
         rgb_bus_event_init(&self->swap_bufs);
         rgb_bus_event_set(&self->swap_bufs);
+        // Created empty: only rgb_bus_frame_done_cb gives it.
+        rgb_bus_lock_init(&self->frame_done);
+        rgb_bus_lock_acquire(&self->frame_done, 0);
+        self->frame_wait = 0;
+        self->copy_busy = 0;
+        self->direct_mode = 0;
         rgb_bus_lock_init(&self->init_lock);
         rgb_bus_lock_acquire(&self->init_lock, -1);
 
@@ -448,13 +458,80 @@
     }
 
 
+    // Show `fb` and wait until the panel has switched to it (see
+    // rgb_bus_frame_done_cb): from then on the other buffer is free to draw in.
+    static mp_lcd_err_t rgb_bus_show_frame(mp_lcd_rgb_bus_obj_t *self, uint8_t *fb)
+    {
+        mp_lcd_err_t ret = esp_lcd_panel_draw_bitmap(
+            self->panel_handle, 0, 0, self->width, self->height, fb);
+
+        if (ret != 0) return ret;
+
+        // frame_wait is set only once draw_bitmap has switched the driver to
+        // `fb`, so the awaited switch can only take `fb`. A switch falling in
+        // between is skipped, at the cost of one frame at most. The take with
+        // no wait drops a give left by a wait that timed out.
+        rgb_bus_lock_acquire(&self->frame_done, 0);
+        self->frame_wait = 1;
+
+        if (!rgb_bus_lock_acquire(&self->frame_done, RGB_BUS_FRAME_WAIT_MS)) {
+            self->frame_wait = 0;
+            return ESP_ERR_TIMEOUT;
+        }
+
+        self->active_fb = fb;
+        self->idle_fb = (fb == self->fbs[0]) ? self->fbs[1] : self->fbs[0];
+        return LCD_OK;
+    }
+
+
+    // After the last partial tx_color has returned, the copy task may still be
+    // showing that frame and resyncing the idle buffer, up to some 75 ms.
+    static bool rgb_bus_wait_copy_idle(mp_lcd_rgb_bus_obj_t *self)
+    {
+        for (uint32_t ms = 0; self->copy_busy; ms++) {
+            if (ms >= RGB_BUS_FRAME_WAIT_MS) return false;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        return true;
+    }
+
+
+    // Direct mode: LVGL has drawn straight into a panel frame buffer, and
+    // passes the start of that buffer whatever the area, so there is nothing
+    // to copy. On the last area of a refresh, the buffer is shown before
+    // flush_ready: LVGL then draws the next frame into the other one.
+    static mp_lcd_err_t rgb_tx_color_direct(mp_lcd_rgb_bus_obj_t *self, uint8_t *color, bool last_update)
+    {
+        if (last_update) {
+            mp_lcd_err_t ret = rgb_bus_show_frame(self, color);
+
+            if (ret != LCD_OK) {
+                mp_printf(&mp_plat_print, "rgb_bus direct mode: frame not shown (%d)\n", ret);
+            }
+        }
+
+        if (self->callback != mp_const_none && mp_obj_is_callable(self->callback)) {
+            mp_call_function_n_kw(self->callback, 0, 0, NULL);
+        }
+
+        return LCD_OK;
+    }
+
+
     mp_lcd_err_t rgb_tx_color(mp_obj_t obj, int lcd_cmd, void *color, size_t color_size, int x_start, int y_start, int x_end, int y_end, uint8_t rotation, bool last_update)
     {
         LCD_DEBUG_PRINT("rgb_tx_color(self, lcd_cmd=%d, color, color_size=%d, x_start=%d, y_start=%d, x_end=%d, y_end=%d)\n", lcd_cmd, color_size, x_start, y_start, x_end, y_end)
         LCD_UNUSED(color_size);
 
         mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)obj;
-        
+
+        // Anything but a panel frame buffer goes through the copy below.
+        if (self->direct_mode && rotation == 0 &&
+                (color == self->fbs[0] || color == self->fbs[1])) {
+            return rgb_tx_color_direct(self, (uint8_t *)color, last_update);
+        }
+
         rgb_bus_lock_acquire(&self->tx_color_lock, -1);
 
         self->last_update = (uint8_t)last_update;
@@ -478,12 +555,118 @@
         return LCD_OK;
     }
 
+
+    static mp_obj_t mp_lcd_rgb_bus_set_direct_mode(mp_obj_t self_in, mp_obj_t enable_in)
+    {
+        mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)MP_OBJ_TO_PTR(self_in);
+        bool enable = mp_obj_is_true(enable_in);
+
+        if (self->panel_handle == NULL) {
+            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("RGB bus not initialized"));
+        }
+
+        if (enable == (bool)self->direct_mode) {
+            return mp_const_none;
+        }
+
+        if (!enable) {
+            self->direct_mode = 0;
+            // The copy path draws into the idle buffer over a copy of the
+            // displayed image.
+            memcpy(self->idle_fb, self->active_fb, self->width * self->height * self->bytes_per_pixel);
+            return mp_const_none;
+        }
+
+        // A byte swap would be applied to the frame buffer in place, a dither
+        // would be skipped, and the frame-done signal holds with bounce
+        // buffers only (rgb_bus_frame_done_cb).
+        if (self->rgb565_byte_swap || self->rgb565_dither ||
+                self->panel_io_config.bounce_buffer_size_px == 0) {
+            mp_raise_msg(&mp_type_ValueError,
+                MP_ERROR_TEXT("direct mode needs bounce buffers, no byte swap and no dither"));
+        }
+
+        if (!rgb_bus_wait_copy_idle(self)) {
+            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("RGB copy task still busy"));
+        }
+
+        void *fb0 = NULL;
+        void *fb1 = NULL;
+        mp_lcd_err_t ret = esp_lcd_rgb_panel_get_frame_buffer(self->panel_handle, 2, &fb0, &fb1);
+
+        if (ret != LCD_OK) {
+            mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("%d(esp_lcd_rgb_panel_get_frame_buffer)"), ret);
+        }
+
+        self->fbs[0] = (uint8_t *)fb0;
+        self->fbs[1] = (uint8_t *)fb1;
+
+        // Show the displayed buffer explicitly: once the panel has switched
+        // to it, idle_fb is known not to be read when LVGL draws into it.
+        ret = rgb_bus_show_frame(self, self->active_fb);
+
+        if (ret != LCD_OK) {
+            mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("%d(rgb_bus_show_frame)"), ret);
+        }
+
+        self->direct_mode = 1;
+        return mp_const_none;
+    }
+
+    static MP_DEFINE_CONST_FUN_OBJ_2(mp_lcd_rgb_bus_set_direct_mode_obj, mp_lcd_rgb_bus_set_direct_mode);
+
+
+    // (back, front): LVGL must start drawing into the buffer not displayed.
+    static mp_obj_t mp_lcd_rgb_bus_get_frame_buffers(mp_obj_t self_in)
+    {
+        mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)MP_OBJ_TO_PTR(self_in);
+
+        if (!self->direct_mode) {
+            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("direct mode is off"));
+        }
+
+        size_t size = self->width * self->height * self->bytes_per_pixel;
+        uint8_t *bufs[2] = { self->idle_fb, self->active_fb };
+        mp_obj_t views[2];
+
+        for (uint8_t i = 0; i < 2; i++) {
+            mp_obj_array_t *view = MP_OBJ_TO_PTR(mp_obj_new_memoryview(BYTEARRAY_TYPECODE, size, bufs[i]));
+            view->typecode |= 0x80; // writable, as in lcd_panel_io_allocate_framebuffer
+            views[i] = MP_OBJ_FROM_PTR(view);
+        }
+
+        return mp_obj_new_tuple(2, views);
+    }
+
+    static MP_DEFINE_CONST_FUN_OBJ_1(mp_lcd_rgb_bus_get_frame_buffers_obj, mp_lcd_rgb_bus_get_frame_buffers);
+
+
+    // The methods of mp_lcd_bus_locals_dict (modlcd_bus.c), plus the two that
+    // only this bus has.
+    static const mp_rom_map_elem_t mp_lcd_rgb_bus_locals_dict_table[] = {
+        { MP_ROM_QSTR(MP_QSTR_get_lane_count),       MP_ROM_PTR(&mp_lcd_bus_get_lane_count_obj)       },
+        { MP_ROM_QSTR(MP_QSTR_allocate_framebuffer), MP_ROM_PTR(&mp_lcd_bus_allocate_framebuffer_obj) },
+        { MP_ROM_QSTR(MP_QSTR_free_framebuffer),     MP_ROM_PTR(&mp_lcd_bus_free_framebuffer_obj)     },
+        { MP_ROM_QSTR(MP_QSTR_register_callback),    MP_ROM_PTR(&mp_lcd_bus_register_callback_obj)    },
+        { MP_ROM_QSTR(MP_QSTR_tx_param),             MP_ROM_PTR(&mp_lcd_bus_tx_param_obj)             },
+        { MP_ROM_QSTR(MP_QSTR_tx_color),             MP_ROM_PTR(&mp_lcd_bus_tx_color_obj)             },
+        { MP_ROM_QSTR(MP_QSTR_rx_param),             MP_ROM_PTR(&mp_lcd_bus_rx_param_obj)             },
+        { MP_ROM_QSTR(MP_QSTR_init),                 MP_ROM_PTR(&mp_lcd_bus_init_obj)                 },
+        { MP_ROM_QSTR(MP_QSTR_deinit),               MP_ROM_PTR(&mp_lcd_bus_deinit_obj)               },
+        { MP_ROM_QSTR(MP_QSTR___del__),              MP_ROM_PTR(&mp_lcd_bus_deinit_obj)               },
+        { MP_ROM_QSTR(MP_QSTR_set_direct_mode),      MP_ROM_PTR(&mp_lcd_rgb_bus_set_direct_mode_obj)  },
+        { MP_ROM_QSTR(MP_QSTR_get_frame_buffers),    MP_ROM_PTR(&mp_lcd_rgb_bus_get_frame_buffers_obj)},
+    };
+
+    static MP_DEFINE_CONST_DICT(mp_lcd_rgb_bus_locals_dict, mp_lcd_rgb_bus_locals_dict_table);
+
+
     MP_DEFINE_CONST_OBJ_TYPE(
         mp_lcd_rgb_bus_type,
         MP_QSTR_RGBBus,
         MP_TYPE_FLAG_NONE,
         make_new, mp_lcd_rgb_bus_make_new,
-        locals_dict, (mp_obj_dict_t *)&mp_lcd_bus_locals_dict
+        locals_dict, (mp_obj_dict_t *)&mp_lcd_rgb_bus_locals_dict
     );
 
 #else

@@ -165,12 +165,36 @@
     }
 
 
+    // With bounce buffers, the driver reads a frame buffer only to refill
+    // them, and takes the buffer last passed to esp_lcd_panel_draw_bitmap when
+    // the refill wraps to the next frame. This callback runs in that same ISR,
+    // right after the switch: once it has fired, the other buffer is no longer
+    // read. Direct mode waits for it before LVGL may draw again.
+    static bool rgb_bus_frame_done_cb(esp_lcd_panel_handle_t panel,
+                                    const esp_lcd_rgb_panel_event_data_t *edata, void *user_ctx)
+    {
+        LCD_UNUSED(panel);
+        LCD_UNUSED(edata);
+        mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)user_ctx;
+
+        if (!self->frame_wait) return false;
+
+        self->frame_wait = 0;
+        BaseType_t woken = pdFALSE;
+        xSemaphoreGiveFromISR(self->frame_done.handle, &woken);
+        return woken == pdTRUE;
+    }
+
+
     void rgb_bus_copy_task(void *self_in) {
         LCD_DEBUG_PRINT("rgb_bus_copy_task - STARTED\n")
 
         mp_lcd_rgb_bus_obj_t *self = (mp_lcd_rgb_bus_obj_t *)self_in;
 
-        esp_lcd_rgb_panel_event_callbacks_t callbacks = { .on_vsync = rgb_bus_trans_done_cb };
+        esp_lcd_rgb_panel_event_callbacks_t callbacks = {
+            .on_vsync = rgb_bus_trans_done_cb,
+            .on_frame_buf_complete = rgb_bus_frame_done_cb
+        };
 
         self->init_err = esp_lcd_new_rgb_panel(&self->panel_io_config, &self->panel_handle);
         if (self->init_err != 0) {
@@ -233,6 +257,10 @@
             rgb_bus_lock_acquire(&self->copy_lock, -1);
 
             if (self->partial_buf == NULL) break;
+            // Set before tx_color_lock is released below, so once tx_color
+            // has returned, copy_busy tells whether the frame is still being
+            // shown and resynced.
+            self->copy_busy = 1;
             last_update = self->last_update;
 
             idle_fb = self->idle_fb;
@@ -265,6 +293,7 @@
                 }
             }
 
+            self->copy_busy = 0;
             exit = rgb_bus_event_isset(&self->copy_task_exit);
         }
 
