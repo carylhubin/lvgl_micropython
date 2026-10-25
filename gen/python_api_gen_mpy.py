@@ -2071,6 +2071,51 @@ static void *mp_lv_callback(mp_obj_t mp_callback, void *lv_callback, qstr callba
 
 static int _nesting = 0;
 
+// cannazor C24.3 : une exception levée dans un rappel Python appelé par LVGL
+// ne traverse plus le code C de LVGL. Elle sautait par-dessus
+// `lv_timer_handler`, qui laissait `already_running` levé : plus rien ne se
+// dessinait ni ne se lisait avant le redémarrage. Chaque rappel est
+// désormais protégé ; une faute est comptée, son texte gardé pour
+// `lvgl.callback_errors()`, et sa trace imprimée. Un Ctrl-C est replanifié
+// pour lever au retour dans Python, après LVGL.
+
+static mp_int_t lv_mp_callback_error_count = 0;
+static char lv_mp_callback_error_text[96];
+
+static void lv_mp_callback_failed(mp_obj_t exc)
+{
+    if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(exc)), MP_OBJ_FROM_PTR(&mp_type_KeyboardInterrupt))) {
+        mp_sched_keyboard_interrupt();
+        return;
+    }
+    lv_mp_callback_error_count++;
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        vstr_t vstr;
+        mp_print_t print;
+        vstr_init_print(&vstr, 32, &print);
+        mp_obj_print_helper(&print, exc, PRINT_EXC);
+        size_t len = vstr.len < sizeof(lv_mp_callback_error_text) - 1 ? vstr.len : sizeof(lv_mp_callback_error_text) - 1;
+        memcpy(lv_mp_callback_error_text, vstr.buf, len);
+        lv_mp_callback_error_text[len] = 0;
+        vstr_clear(&vstr);
+        mp_printf(&mp_plat_print, "Rappel LVGL en faute, exception absorbée :\\n");
+        mp_obj_print_exception(&mp_plat_print, exc);
+        nlr_pop();
+    }
+}
+
+static mp_obj_t mp_lv_callback_errors(void)
+{
+    mp_obj_t items[2] = {
+        mp_obj_new_int(lv_mp_callback_error_count),
+        mp_obj_new_str(lv_mp_callback_error_text, strlen(lv_mp_callback_error_text)),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+
+static MP_DEFINE_CONST_FUN_OBJ_0(mp_lv_callback_errors_obj, mp_lv_callback_errors);
+
 // Function pointers wrapper
 
 static mp_obj_t mp_lv_funcptr(const mp_lv_obj_fun_builtin_var_t *mp_fun, void *lv_fun, void *lv_callback, qstr func_name, void *user_data)
@@ -2985,12 +3030,20 @@ def gen_callback_func(func, func_name = None, user_data_argument = False):
 GENMPY_UNUSED static {return_type} {func_name}_callback({func_args})
 {{
     mp_obj_t mp_args[{num_args}];
-    {build_args}
-    mp_obj_t callbacks = get_callback_dict_from_user_data({user_data});
+    nlr_buf_t nlr;
     _nesting++;
-    {return_value_assignment}mp_call_function_n_kw(mp_obj_dict_get(callbacks, MP_OBJ_NEW_QSTR(MP_QSTR_{func_name})) , {num_args}, 0, mp_args);
+    if (nlr_push(&nlr) == 0) {{
+        {build_args}
+        mp_obj_t callbacks = get_callback_dict_from_user_data({user_data});
+        {return_value_assignment}mp_call_function_n_kw(mp_obj_dict_get(callbacks, MP_OBJ_NEW_QSTR(MP_QSTR_{func_name})) , {num_args}, 0, mp_args);
+        {return_value_store}
+        nlr_pop();
+        _nesting--;
+        return{return_value};
+    }}
+    lv_mp_callback_failed(MP_OBJ_FROM_PTR(nlr.ret_val));
     _nesting--;
-    return{return_value};
+    {return_failure}
 }}
 """.format(
         func_prototype = gen.visit(func),
@@ -3001,7 +3054,10 @@ GENMPY_UNUSED static {return_type} {func_name}_callback({func_args})
         build_args="\n    ".join([build_callback_func_arg(arg, i, func, func_name=func_name) for i,arg in enumerate(args)]),
         user_data=full_user_data,
         return_value_assignment = '' if return_type == 'void' else 'mp_obj_t callback_result = ',
-        return_value='' if return_type == 'void' else ' %s(callback_result)' % mp_to_lv[return_type]))
+        return_value_store = '' if return_type == 'void' else '%s lv_mp_result = %s(callback_result);' % (return_type, mp_to_lv[return_type]),
+        return_value = '' if return_type == 'void' else ' lv_mp_result',
+        return_failure = 'return;' if return_type == 'void' else '{rtype} lv_mp_zero;\n    memset(&lv_mp_zero, 0, sizeof(lv_mp_zero));\n    return lv_mp_zero;'.format(
+            rtype = get_type(func.type, remove_quals = True))))
     generated_callbacks[func_name] = True
 
 
@@ -3652,6 +3708,7 @@ print("""
 
 static const mp_rom_map_elem_t {module_name}_globals_table[] = {{
     {{ MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_{module_name}) }},
+    {{ MP_ROM_QSTR(MP_QSTR_callback_errors), MP_ROM_PTR(&mp_lv_callback_errors_obj) }},
     {objects}
     {functions}
     {enums}
